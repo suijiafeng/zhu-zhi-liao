@@ -1,5 +1,10 @@
 import { useState } from 'react'
-import Game, { TITLES, ROUND_TIME, STAMPS, readStamps } from './Game.jsx'
+import Game from './Game.jsx'
+import { TITLES } from './titles.js'
+import { ROUND_TIME } from './gameConstants.js'
+import { STAMPS, readStamps } from './stamps.js'
+import ModCodex from './components/ModCodex.jsx'
+import StampWall from './components/StampWall.jsx'
 
 const readBest = () => {
   try { return Number(localStorage.getItem('zzl_best') || 0) } catch { return 0 }
@@ -22,6 +27,9 @@ export default function App() {
       <header className="site-header">
         <h1>🎋 竹知了<span className="seal">鸣</span></h1>
         <p className="subtitle">摇一摇，飞上天 · 听它"呱呱嘎哇"地叫</p>
+        <p className="theme-tags">
+          <span>江河湖海</span><span>星辰雷电</span><span>十二生肖</span>
+        </p>
       </header>
 
       <main className="layout">
@@ -37,24 +45,18 @@ export default function App() {
               <li><b>🤏 掐线消音</b>（空格 / 按钮）：老爷爷打盹时全靠它</li>
               <li>🌳 野蝉起调后稳住绿区<b>对唱</b>；🐱 野猫扑来时冲进<span className="k amber">橙区</span>吓走它</li>
               <li>绿区蓄满飞天值 → 🚀 <b>放飞</b>（按钮 / F 键 / 手机<b>摇一摇</b>）送它上天</li>
-              <li>每场随机<b>彩头</b>（共 14 种）：夜场灯会 🏮 / 毒日头 ☀️ / 中秋月圆 🌕 等，各带独特画面与得分机制</li>
+              <li>每场随机<b>彩头</b>（共 34 种）：江河湖海、星辰雷电、十二生肖各有一场，各带独特画面与得分机制</li>
             </ul>
           </details>
 
           <details className="card">
+            <summary>🎭 彩头图鉴</summary>
+            <ModCodex />
+          </details>
+
+          <details className="card">
             <summary>🧧 印章收集 <span className="count">{stamps.length}/{STAMPS.length}</span></summary>
-            <div className="stamp-grid">
-              {STAMPS.map((s) => {
-                const got = stamps.includes(s.id)
-                return (
-                  <div key={s.id} className={got ? 'stamp earned' : 'stamp locked'} title={s.desc}>
-                    <span className="ico">{s.icon}</span>
-                    <span className="nm">{s.name}</span>
-                    {!got && <span className="ds">{s.desc}</span>}
-                  </div>
-                )
-              })}
-            </div>
+            <StampWall earned={stamps} />
           </details>
 
           <details className="card">

@@ -1,232 +1,19 @@
 import { useEffect, useRef, useState } from 'react'
-
-const W = 480
-const H = 640
-const CX = W / 2
-const CY = H / 2 - 40
-const rand = (a, b) => a + Math.random() * (b - a)
-const clamp = (v, a, b) => Math.max(a, Math.min(b, v))
-
-// ================= WebAudio：黏—滑脉冲式蝉鸣 =================
-let actx = null
-let muted = false
-const getCtx = () => {
-  if (!actx) actx = new (window.AudioContext || window.webkitAudioContext)()
-  if (actx.state === 'suspended') actx.resume()
-  return actx
-}
-
-// 真实竹知了是线在松香上"黏—滑"交替摩擦产生脉冲，经筒口薄膜共鸣放大。
-// 合成链路：低频锯齿波 → 失真 → LFO 调幅(黏滑脉冲) → 相位扫频"哇音"带通
-//          → 三个共振峰(模拟薄膜腔体) + 摩擦噪声层 → 压限输出
-function createCicadaVoice() {
-  const ctx = getCtx()
-
-  // 主振荡：低基频锯齿波（真实玩具基频很低，"哇"的音色靠共振峰塑形）
-  const osc = ctx.createOscillator()
-  osc.type = 'sawtooth'
-  osc.frequency.value = 70
-
-  // 失真：让摩擦声有毛刺感
-  const shaper = ctx.createWaveShaper()
-  {
-    const n = 1024
-    const curve = new Float32Array(n)
-    for (let i = 0; i < n; i++) {
-      const x = (i / (n - 1)) * 2 - 1
-      curve[i] = Math.tanh(x * 3)
-    }
-    shaper.curve = curve
-    shaper.oversample = '2x'
-  }
-  osc.connect(shaper)
-
-  // 黏滑脉冲：LFO 调幅
-  const am = ctx.createGain(); am.gain.value = 0.6
-  const lfo = ctx.createOscillator()
-  lfo.type = 'sine'; lfo.frequency.value = 24
-  const lfoAmt = ctx.createGain(); lfoAmt.gain.value = 0.35
-  lfo.connect(lfoAmt).connect(am.gain)
-  shaper.connect(am)
-
-  // 摩擦噪声层
-  const nBuf = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate)
-  const nd = nBuf.getChannelData(0)
-  for (let i = 0; i < nd.length; i++) nd[i] = Math.random() * 2 - 1
-  const noise = ctx.createBufferSource()
-  noise.buffer = nBuf; noise.loop = true
-  const nFil = ctx.createBiquadFilter()
-  nFil.type = 'bandpass'; nFil.frequency.value = 2500; nFil.Q.value = 0.7
-  const nGain = ctx.createGain(); nGain.gain.value = 0
-  noise.connect(nFil).connect(nGain)
-
-  const bus = ctx.createGain(); bus.gain.value = 0.9
-  am.connect(bus); nGain.connect(bus)
-
-  // "哇音"带通：中心频率随甩动相位摆动（哇~的开合感）
-  const wah = ctx.createBiquadFilter()
-  wah.type = 'bandpass'; wah.frequency.value = 900; wah.Q.value = 2.2
-  bus.connect(wah)
-
-  // 三个共振峰：模拟筒口薄膜 + 竹筒腔体的固有共振
-  const sum = ctx.createGain(); sum.gain.value = 1
-  ;[[1050, 9, 0.9], [2150, 11, 0.6], [3350, 13, 0.4]].forEach(([f, q, g]) => {
-    const bp = ctx.createBiquadFilter()
-    bp.type = 'bandpass'; bp.frequency.value = f; bp.Q.value = q
-    const fg = ctx.createGain(); fg.gain.value = g
-    wah.connect(bp).connect(fg).connect(sum)
-  })
-  const bleed = ctx.createGain(); bleed.gain.value = 0.08
-  wah.connect(bleed).connect(sum)
-
-  const hp = ctx.createBiquadFilter()
-  hp.type = 'highpass'; hp.frequency.value = 360
-  const master = ctx.createGain(); master.gain.value = 0
-  const comp = ctx.createDynamicsCompressor()
-  comp.threshold.value = -18; comp.ratio.value = 8
-  comp.attack.value = 0.004; comp.release.value = 0.18
-  const panner = ctx.createStereoPanner ? ctx.createStereoPanner() : null
-  sum.connect(hp).connect(master).connect(comp)
-  if (panner) { comp.connect(panner).connect(ctx.destination) } else { comp.connect(ctx.destination) }
-
-  osc.start(); lfo.start(); noise.start()
-
-  return {
-    // speed: 0-1 强度；theta: 当前甩动角度（相位联动的关键）
-    set(speed, pinched, theta = 0) {
-      const t = ctx.currentTime
-      const active = pinched ? 0 : clamp(speed, 0, 1)
-      master.gain.setTargetAtTime(0.8 * Math.pow(active, 1.3), t, pinched ? 0.015 : 0.07)
-      // 低基频 + 每圈一摆的音高微颤（张力/多普勒感）
-      const f0 = clamp(55 + speed * 140, 50, 195)
-      osc.frequency.setTargetAtTime(f0, t, 0.06)
-      osc.detune.setTargetAtTime(46 * Math.sin(theta + 0.9) * clamp(active * 1.6, 0, 1), t, 0.03)
-      // 黏滑脉冲密度随转速
-      lfo.frequency.setTargetAtTime(20 + speed * 22, t, 0.1)
-      // "哇音"扫频随相位开合 —— 哇~哇~ 的灵魂；乘个倍数让每圈里"哇"的次数变多、周期更短
-      const wf = 760 + 520 * active + (430 + 330 * active) * Math.sin(theta * 1.6 - 0.7)
-      wah.frequency.setTargetAtTime(Math.max(320, wf), t, 0.025)
-      // 摩擦噪声
-      nGain.gain.setTargetAtTime(0.03 + 0.16 * active, t, 0.08)
-      // 声像随甩动位置左右摆动
-      if (panner) panner.pan.setTargetAtTime(clamp(Math.cos(theta) * 0.85, -1, 1), t, 0.05)
-    },
-    stop() { try { osc.stop(); lfo.stop(); noise.stop() } catch {} },
-  }
-}
-const beep = (f, d = 0.12, type = 'sine', v = 0.15, slide = 0, bp = 0) => {
-  if (muted) return
-  try {
-    const ctx = getCtx()
-    const o = ctx.createOscillator(); const g = ctx.createGain()
-    o.type = type; o.frequency.value = f
-    if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(40, f + slide), ctx.currentTime + d)
-    g.gain.setValueAtTime(v, ctx.currentTime)
-    g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + d)
-    let out = o.connect(g)
-    if (bp) { // 可选共振峰，让单声"嘎"也带鼻音
-      const flt = ctx.createBiquadFilter()
-      flt.type = 'bandpass'; flt.frequency.value = bp; flt.Q.value = 6
-      out = out.connect(flt)
-    }
-    out.connect(ctx.destination); o.start(); o.stop(ctx.currentTime + d)
-  } catch {}
-}
-const sndCrowdWa = () => { for (let i = 0; i < 5; i++) setTimeout(() => beep(rand(280, 430), 0.5, 'sine', 0.055, -rand(60, 150)), i * 45) }
-const sndSnap = () => { beep(700, 0.08, 'square', 0.25); setTimeout(() => beep(150, 0.4, 'sawtooth', 0.2, -80), 60) }
-const sndCombo = (n) => beep(500 + Math.min(n, 12) * 70, 0.15, 'sine', 0.16)
-const sndFanfare = () => [523, 659, 784, 1046].forEach((f, i) => setTimeout(() => beep(f, 0.25, 'triangle', 0.14), i * 120))
-const sndWildWa = () => beep(rand(175, 210), 0.3, 'sawtooth', 0.32, -65, 1050)
-const sndSnore = () => beep(110, 0.5, 'sine', 0.1, 20)
-const sndAngry = () => { beep(200, 0.15, 'square', 0.18); setTimeout(() => beep(160, 0.25, 'square', 0.18, -40), 130) }
-const sndSuccess = () => { beep(660, 0.12, 'sine', 0.15); setTimeout(() => beep(990, 0.2, 'sine', 0.15), 100) }
-const sndMeow = () => { beep(620, 0.18, 'sine', 0.14, -180); setTimeout(() => beep(430, 0.22, 'sine', 0.12, -120), 140) }
-const sndFly = () => {
-  beep(300, 0.9, 'sawtooth', 0.14, 750, 1200)
-  for (let i = 0; i < 4; i++) setTimeout(() => beep(230 - i * 18, 0.26, 'sawtooth', 0.2, -50, 1000), 350 + i * 190)
-}
-
-export const TITLES = [
-  [0, '手生的娃娃 🌱'],
-  [400, '巷口小能手 🎋'],
-  [1000, '庙会艺人 🏮'],
-  [2000, '甩蝉高手 🥇'],
-  [3800, '哇声一片·宗师 👑'],
-]
-const getTitle = (s) => TITLES.reduce((t, [min, name]) => (s >= min ? name : t), TITLES[0][1])
-
-// 每局随机彩头：改变玩法侧重、得分倍率与画面氛围。
-// 字段都是可选的机制钩子，缺省即维持基础规则——加新场景只需按需挑字段填，不用改主循环。
-//   mult 得分倍率 · zoneWidthMult 甜蜜区宽度 · driftFrames 节奏区漂移间隔（越小漂得越勤）
-//   decayMult 转速衰减倍率（>1 更快掉速）· snapMult 断线张力累积倍率（>1 更易断）
-//   startCrowd 起始欢呼度 · feverThreshold 狂欢触发阈值 · eventCooldownStart 首个事件冷却
-//   eventFreqMult 事件冷却倍率（<1 更频繁）· napWeightBonus/duetWeightBonus 事件权重偏移
-//   napBonusMult/duetMultBonus 对应事件的奖励倍率 · dark 深色配色 · stars 星空 · moon 月亮
-//   particle 环境粒子 {kind, rate, color}
-const MODS = [
-  { id: 'plain', name: '寻常日子', icon: '🎪', desc: '风平浪静，好好演出', mult: 1, w: 3 },
-  { id: 'night', name: '夜场灯会', icon: '🏮', desc: '灯笼点起，萤火作伴 · 得分 +20%', mult: 1.2, w: 2,
-    dark: true, stars: true, bg: { top: '#252b47', bottom: '#4a3a2c' },
-    particle: { kind: 'firefly', rate: 0.4, color: '255,236,130' } },
-  { id: 'wind', name: '大风天', icon: '🌬️', desc: '节奏区漂得更勤 · 得分 +30%', mult: 1.3, w: 2, driftFrames: 200 },
-  { id: 'lazy', name: '懒觉日', icon: '😴', desc: '老爷爷今天特别困 · 守盹奖励翻倍', mult: 1, w: 1.6,
-    napWeightBonus: 0.19, napBonusMult: 2 },
-  { id: 'rain', name: '雨夜演出', icon: '🌧️', desc: '线绳打滑，转速掉得快 · 得分 +25%', mult: 1.25, w: 1.6,
-    dark: true, bg: { top: '#2b3340', bottom: '#3c4a3e' }, decayMult: 1.35,
-    particle: { kind: 'rain', rate: 1.1, color: '190,210,230' } },
-  { id: 'sun', name: '毒日头', icon: '☀️', desc: '竹片晒得发脆，更容易绷断 · 得分 +35%', mult: 1.35, w: 1.6,
-    bg: { top: '#fff2c4', bottom: '#f0c46a' }, snapMult: 1.5 },
-  { id: 'fog', name: '大雾天', icon: '🌫️', desc: '雾气遮眼，节奏区变窄 · 得分 +30%', mult: 1.3, w: 1.4,
-    bg: { top: '#cdd3cf', bottom: '#b7c2ba' }, zoneWidthMult: 0.65,
-    particle: { kind: 'fogpuff', rate: 0.15, color: '255,255,255' } },
-  { id: 'peak', name: '庙会高峰', icon: '👥', desc: '人潮拥挤，事件更密、狂欢更易触发', mult: 1.1, w: 1.4,
-    startCrowd: 20, feverThreshold: 80, eventCooldownStart: 260, eventFreqMult: 0.65 },
-  { id: 'moon', name: '中秋月圆', icon: '🌕', desc: '桂花香里，对唱更常见、奖励更丰', mult: 1.15, w: 1.4,
-    dark: true, stars: true, moon: true, bg: { top: '#26305c', bottom: '#5a4a72' },
-    duetWeightBonus: 0.18, duetMultBonus: 1.5, particle: { kind: 'petal', rate: 0.3, color: '255,214,235' } },
-  { id: 'newyear', name: '新春庙会', icon: '🧨', desc: '碎纸漫天，欢呼起点更高、狂欢更易触发', mult: 1.1, w: 1.4,
-    startCrowd: 25, feverThreshold: 85, particle: { kind: 'confetti', rate: 0.5, color: '217,70,62' } },
-  { id: 'dawn', name: '清晨早市', icon: '🌅', desc: '新手友好：节奏区更宽、漂移更慢', mult: 1, w: 1.3,
-    bg: { top: '#ffe1c2', bottom: '#ffcfa0' }, zoneWidthMult: 1.4, driftFrames: 420, napWeightBonus: -0.1 },
-  { id: 'hardcore', name: '硬核挑战场', icon: '🏆', desc: '节奏区更窄、漂移更快 · 得分 ×1.5', mult: 1.5, w: 1,
-    zoneWidthMult: 0.6, driftFrames: 180 },
-  { id: 'plum', name: '梅雨潮湿天', icon: '💧', desc: '线绳发涩不易断，但转速掉得快', mult: 1.15, w: 1.3,
-    bg: { top: '#dbe4d8', bottom: '#c3d0c1' }, decayMult: 1.25, snapMult: 0.6,
-    particle: { kind: 'rain', rate: 0.5, color: '170,190,180' } },
-  { id: 'autumn', name: '秋风落叶', icon: '🍃', desc: '风助一臂，转速更耐甩，但节奏区飘得快', mult: 1.1, w: 1.3,
-    bg: { top: '#e8d3a0', bottom: '#c99a5c' }, decayMult: 0.85, driftFrames: 220,
-    particle: { kind: 'leaf', rate: 0.3, color: '198,122,53' } },
-]
-const pickMod = () => {
-  const total = MODS.reduce((s, m) => s + m.w, 0)
-  const r = Math.random() * total
-  let acc = 0
-  for (const m of MODS) { acc += m.w; if (r < acc) return m }
-  return MODS[MODS.length - 1]
-}
-const rollZone = (mod) => {
-  const wMult = mod?.zoneWidthMult ?? 1
-  const nl = rand(0.1, 0.3)
-  return { lo: nl, hi: nl + rand(0.1, 0.15) * wMult }
-}
-const nextEventCooldown = (mod) => rand(420, 640) * (mod?.eventFreqMult ?? 1)
-
-// 印章成就：存 localStorage，跨局收集
-export const STAMPS = [
-  { id: 'first', icon: '🎋', name: '初登台', desc: '完整演完一场', test: () => true },
-  { id: 'combo15', icon: '🔥', name: '十五连拍', desc: '连拍打满 15', test: (r) => r.maxCombo >= 15 },
-  { id: 'guard', icon: '😴', name: '守盹人', desc: '一场守护两次打盹', test: (r) => r.stats.naps >= 2 },
-  { id: 'duet', icon: '🐝', name: '对唱名家', desc: '完成一次完美对唱', test: (r) => r.stats.duets >= 1 },
-  { id: 'cat', icon: '🐱', name: '猫口脱险', desc: '吓退扑蝉的野猫', test: (r) => r.stats.cats >= 1 },
-  { id: 'fever2', icon: '🏮', name: '狂欢之王', desc: '一场触发两次狂欢', test: (r) => r.stats.feverN >= 2 },
-  { id: 'nosnap', icon: '🧵', name: '惜线如金', desc: '800 分且全场不断线', test: (r) => r.score >= 800 && r.brokenN === 0 },
-  { id: 'master', icon: '👑', name: '哇声宗师', desc: '单场拿下 3800 分', test: (r) => r.score >= 3800 },
-]
-export const readStamps = () => {
-  try { return JSON.parse(localStorage.getItem('zzl_stamps') || '[]') } catch { return [] }
-}
-
-export const ROUND_TIME = 60
+import { W, H, CX, CY, ROUND_TIME } from './gameConstants.js'
+import { rand, clamp } from './utils.js'
+import {
+  getAudioContext, setMuted, createCicadaVoice, beep,
+  sndCrowdWa, sndSnap, sndCombo, sndFanfare, sndWildWa, sndSnore,
+  sndAngry, sndSuccess, sndMeow, sndFly, sndChime, sndWhiff,
+  sndThunder, sndLightning,
+} from './audio.js'
+import { pickMod, rollZone, nextEventCooldown } from './scenarios.js'
+import { STAMPS, readStamps, saveStamps } from './stamps.js'
+import { addSeenMod } from './seenScenarios.js'
+import { getTitle } from './titles.js'
+import Hud from './components/Hud.jsx'
+import ReadyOverlay from './components/ReadyOverlay.jsx'
+import GameOverOverlay from './components/GameOverOverlay.jsx'
 
 export default function Game({ onGameOver, best }) {
   const canvasRef = useRef(null)
@@ -243,15 +30,16 @@ export default function Game({ onGameOver, best }) {
     crowd: 0, score: 0, combo: 0, comboT: 0,
     zone: { lo: 0.16, hi: 0.3 }, zoneTimer: 0, inZoneFrames: 0,
     fever: 0,         // 狂欢模式剩余帧
-    event: null,      // {type:'nap'|'duet'|'cat', ...}
+    event: null,      // {type:'nap'|'duet'|'cat'|'golden', ...}
     eventCooldown: 500,
-    stats: { naps: 0, duets: 0, feverN: 0, cats: 0, flights: 0 },
+    stats: { naps: 0, duets: 0, feverN: 0, cats: 0, flights: 0, golden: 0 },
     maxCombo: 0, brokenN: 0, mod: null,
     flyCharge: 0, flight: 0, trail: [], scenery: [],
     waves: [], notes: [], confetti: [],
     crowdFaces: Array.from({ length: 9 }, (_, i) => ({ x: 34 + i * 51, jump: 0, wa: 0 })),
     toasts: [], shake: 0, tick: 0, timeLeft: ROUND_TIME * 60,
-    voice: null,
+    voice: null, flash: 0, thunderTimer: null, lightningTimer: null,
+    cicX: 0, cicY: 0, cicVX: 0, cicVY: 0, cicPrevX: 0, cicPrevY: 0,
   }).current
 
   // -------- 指针（Pointer Events 统一鼠标/触屏；捕获后甩出画布也不断） --------
@@ -260,7 +48,7 @@ export default function Game({ onGameOver, best }) {
     return { x: (e.clientX - rect.left) * (W / rect.width), y: (e.clientY - rect.top) * (H / rect.height) }
   }
   const pDown = (e) => {
-    getCtx()
+    getAudioContext()
     if (phase !== 'playing') return
     try { canvasRef.current.setPointerCapture?.(e.pointerId) } catch {}
     const p = getPos(e)
@@ -349,8 +137,10 @@ export default function Game({ onGameOver, best }) {
       angle: 0, speed: 0, pinched: false, tension: 0, broken: 0, crowd: m.startCrowd || 0, score: 0,
       combo: 0, comboT: 0, inZoneFrames: 0, tick: 0, timeLeft: ROUND_TIME * 60,
       zone: rollZone(m), zoneTimer: 0, fever: 0, event: null, eventCooldown: m.eventCooldownStart ?? 420,
-      stats: { naps: 0, duets: 0, feverN: 0, cats: 0, flights: 0 },
+      stats: { naps: 0, duets: 0, feverN: 0, cats: 0, flights: 0, golden: 0 },
       maxCombo: 0, brokenN: 0, mod: m, flyCharge: 0, flight: 0,
+      flash: 0, thunderTimer: null, lightningTimer: null,
+      cicX: 120, cicY: 26, cicVX: 0, cicVY: 0, cicPrevX: 120, cicPrevY: 26,
     })
     S.waves = []; S.notes = []; S.toasts = []; S.confetti = []; S.trail = []; S.scenery = []
     S.crowdFaces.forEach((f) => { f.jump = 0; f.wa = 0 })
@@ -379,7 +169,7 @@ export default function Game({ onGameOver, best }) {
   const [soundOn, setSoundOn] = useState(true)
   const toggleSound = () => {
     const next = !soundOn
-    muted = !next
+    setMuted(!next)
     setSoundOn(next)
   }
 
@@ -426,6 +216,12 @@ export default function Game({ onGameOver, best }) {
     const maybeSpawnEvent = () => {
       if (S.event || S.fever > 0 || S.flight > 0) return
       if (S.eventCooldown-- > 0) return
+      if (Math.random() < 0.1) {
+        // 金蝉限时闪现：纯惊喜向，稳在绿区接住给大奖，错过不罚
+        S.event = { type: 'golden', t: 100, fromLeft: Math.random() < 0.5, caught: false }
+        addToast('🪙 金蝉现身！稳住绿区接住它！', true)
+        return
+      }
       const r = Math.random()
       const napP = clamp(0.36 + (S.mod?.napWeightBonus || 0), 0.1, 0.75)
       const duetHi = napP + 0.34 + (S.mod?.duetWeightBonus || 0)
@@ -512,7 +308,7 @@ export default function Game({ onGameOver, best }) {
           const x0 = ev.fromLeft ? -24 : W + 24
           const target = ev.fromLeft ? CX - 55 : CX + 55
           ev.px = x0 + (target - x0) * (1 - ev.t / 300)
-          const scaring = S.speed >= 0.34 && S.broken === 0
+          const scaring = S.speed >= 0.765 && S.broken === 0
           if (scaring) ev.scare += 1
           else ev.scare = Math.max(0, ev.scare - 0.4)
           if (ev.scare >= 80) {
@@ -539,6 +335,22 @@ export default function Game({ onGameOver, best }) {
           ev.px += ev.fromLeft ? -7 : 7
           if (ev.t <= 0) { S.event = null; S.eventCooldown = nextEventCooldown(S.mod) }
         }
+      } else if (ev.type === 'golden') {
+        ev.t--
+        if (!ev.caught && inZone() && S.broken === 0 && !S.pinched) {
+          ev.caught = true
+          const bonus = gain(500)
+          S.score += bonus
+          S.crowd = clamp(S.crowd + 20, 0, 100)
+          S.stats.golden++
+          sndChime(); burstConfetti(24)
+          addToast(`🪙 接住金蝉！+${bonus}`, true)
+        }
+        if (ev.t <= 0) {
+          S.event = null
+          S.eventCooldown = nextEventCooldown(S.mod)
+          if (!ev.caught) { sndWhiff(); addToast('💫 金蝉一闪而过…') }
+        }
       }
       if (ev?.pulse > 0) ev.pulse--
     }
@@ -552,6 +364,16 @@ export default function Game({ onGameOver, best }) {
       if (S.fever > 0) {
         g.addColorStop(0, `hsl(${(S.tick * 2) % 360}, 45%, 82%)`)
         g.addColorStop(1, '#e8d2a0')
+      } else if (bg && S.mod?.bg2) {
+        // 晨昏时辰：局内进度从 bg 过渡到 bg2
+        const prog = 1 - clamp(S.timeLeft / (ROUND_TIME * 60), 0, 1)
+        const mix = (a, b, t) => {
+          const pa = a.match(/\w\w/g).map((h) => parseInt(h, 16))
+          const pb = b.match(/\w\w/g).map((h) => parseInt(h, 16))
+          return `rgb(${pa.map((v, i) => Math.round(v + (pb[i] - v) * t)).join(',')})`
+        }
+        g.addColorStop(0, mix(bg.top.replace('#', ''), S.mod.bg2.top.replace('#', ''), prog))
+        g.addColorStop(1, mix(bg.bottom.replace('#', ''), S.mod.bg2.bottom.replace('#', ''), prog))
       } else if (bg) {
         g.addColorStop(0, bg.top)
         g.addColorStop(1, bg.bottom)
@@ -561,6 +383,22 @@ export default function Game({ onGameOver, best }) {
       }
       ctx.fillStyle = g
       ctx.fillRect(0, 0, W, H)
+      if (S.mod?.thunder && S.fever <= 0) {
+        S.thunderTimer = (S.thunderTimer ?? rand(160, 260)) - 1
+        if (S.thunderTimer <= 0) {
+          S.thunderTimer = rand(220, 360)
+          S.shake = 4
+          sndThunder()
+        }
+      }
+      if (S.mod?.lightning && S.fever <= 0) {
+        S.lightningTimer = (S.lightningTimer ?? rand(140, 240)) - 1
+        if (S.lightningTimer <= 0) {
+          S.lightningTimer = rand(200, 340)
+          S.flash = 1
+          sndLightning()
+        }
+      }
       if (S.mod?.stars && S.fever <= 0) {
         for (let i = 0; i < 24; i++) {
           const sx = (i * 97 + 23) % W
@@ -607,12 +445,17 @@ export default function Game({ onGameOver, best }) {
         if (kind === 'firefly') S.scenery.push({ kind, x: rand(0, W), y: rand(70, 380), ph: rand(0, 6), vx: rand(-0.25, 0.25), life: rand(300, 500) })
         else if (kind === 'rain') S.scenery.push({ kind, x: rand(-20, W + 20), y: -10, vy: rand(9, 14), len: rand(14, 22), life: 90 })
         else if (kind === 'fogpuff') S.scenery.push({ kind, x: rand(0, W), y: rand(40, 300), r: rand(50, 100), vx: rand(-0.15, 0.15), a: rand(0.05, 0.12), life: 500 })
+        else if (kind === 'wave') S.scenery.push({ kind, x: rand(-30, W + 30), y: rand(420, 600), vx: rand(0.3, 0.8), amp: rand(4, 10), w: rand(50, 100), life: rand(200, 320) })
+        else if (kind === 'star') S.scenery.push({ kind, x: rand(0, W), y: rand(20, 300), ph: rand(0, 6), life: rand(300, 500) })
+        else if (kind === 'spark') S.scenery.push({ kind, x: rand(0, W), y: rand(0, 150), vx: rand(-1, 1), vy: rand(1, 3), life: rand(18, 32) })
         else S.scenery.push({ kind, x: rand(-10, W + 10), y: -10, vy: rand(0.6, 1.6), vx: rand(-0.4, 0.4), rot: rand(0, 6), vr: rand(-0.05, 0.05), life: 260 }) // snow/petal/leaf/confetti
       }
       S.scenery.forEach((s) => {
         s.life--
         if (s.kind === 'rain') s.y += s.vy
-        else if (s.kind === 'firefly' || s.kind === 'fogpuff') s.x += s.vx
+        else if (s.kind === 'firefly' || s.kind === 'fogpuff' || s.kind === 'wave') s.x += s.vx
+        else if (s.kind === 'star') { /* 静止闪烁 */ }
+        else if (s.kind === 'spark') { s.x += s.vx; s.y += s.vy }
         else { s.y += s.vy; s.x += s.vx; s.rot = (s.rot || 0) + (s.vr || 0) }
       })
       S.scenery = S.scenery.filter((s) => s.life > 0 && s.y < H + 30)
@@ -632,6 +475,18 @@ export default function Game({ onGameOver, best }) {
         } else if (s.kind === 'fogpuff') {
           ctx.fillStyle = `rgba(${col},${s.a})`
           ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2); ctx.fill()
+        } else if (s.kind === 'wave') {
+          ctx.strokeStyle = `rgba(${col},0.4)`; ctx.lineWidth = 1.6
+          ctx.beginPath()
+          for (let i = 0; i <= s.w; i += 6) ctx.lineTo(s.x + i, s.y + Math.sin((i + S.tick * 2) * 0.15) * s.amp)
+          ctx.stroke()
+        } else if (s.kind === 'star') {
+          const a = 0.3 + 0.5 * Math.abs(Math.sin(S.tick * 0.06 + s.ph))
+          ctx.fillStyle = `rgba(${col},${a})`
+          ctx.beginPath(); ctx.arc(s.x, s.y, 1.6, 0, Math.PI * 2); ctx.fill()
+        } else if (s.kind === 'spark') {
+          ctx.strokeStyle = `rgba(${col},${clamp(s.life / 24, 0, 1)})`; ctx.lineWidth = 1.6
+          ctx.beginPath(); ctx.moveTo(s.x, s.y); ctx.lineTo(s.x - s.vx * 3, s.y - s.vy * 3); ctx.stroke()
         } else {
           ctx.save(); ctx.translate(s.x, s.y); ctx.rotate(s.rot || 0)
           ctx.fillStyle = `rgba(${col},0.85)`
@@ -656,7 +511,6 @@ export default function Game({ onGameOver, best }) {
         ctx.fillRect(x - 8, y + 4, 16, 3) // 白胡子
         ctx.fillStyle = '#5b7fa6'
         ctx.beginPath(); ctx.roundRect(x - 12, y + 10, 24, 20, 4); ctx.fill()
-        // Zzz / 警告
         const noisy = S.speed > 0.1 && !S.pinched
         ctx.font = 'bold 16px sans-serif'; ctx.textAlign = 'center'
         if (noisy) {
@@ -678,7 +532,6 @@ export default function Game({ onGameOver, best }) {
         ctx.fillStyle = '#8a6a3c'; ctx.fillRect(x - 4, y + 10, 8, 40)
         ctx.fillStyle = '#5f8a4a'
         ctx.beginPath(); ctx.arc(x, y, 26, 0, Math.PI * 2); ctx.arc(x - 18, y + 12, 18, 0, Math.PI * 2); ctx.arc(x + 18, y + 12, 18, 0, Math.PI * 2); ctx.fill()
-        // 野蝉（叫时放大）
         const pulse = ev.pulse > 0 ? 1 + ev.pulse * 0.02 : 1
         ctx.save(); ctx.translate(x + 6, y - 2); ctx.scale(pulse, pulse)
         ctx.fillStyle = '#4a3a2a'
@@ -697,61 +550,75 @@ export default function Game({ onGameOver, best }) {
         const dirC = ev.fromLeft ? 1 : -1 // 面向场中央
         const bob = Math.sin(S.tick * 0.25) * (ev.stage === 'flee' ? 4 : 1.5)
         ctx.save(); ctx.translate(x, y + bob); ctx.scale(dirC, 1)
-        // 尾巴
         ctx.strokeStyle = '#4c4c56'; ctx.lineWidth = 4; ctx.lineCap = 'round'
         ctx.beginPath(); ctx.moveTo(-16, -2)
         ctx.quadraticCurveTo(-30, -8 - Math.sin(S.tick * 0.15) * 6, -26, -20); ctx.stroke()
-        // 身体 + 头
         ctx.fillStyle = '#565660'
         ctx.beginPath(); ctx.ellipse(-4, -6, 16, 10, 0, 0, Math.PI * 2); ctx.fill()
         ctx.beginPath(); ctx.arc(12, -14, 9, 0, Math.PI * 2); ctx.fill()
-        // 耳朵
         ctx.beginPath()
         ctx.moveTo(6, -20); ctx.lineTo(8, -28); ctx.lineTo(12, -21); ctx.closePath()
         ctx.moveTo(14, -21); ctx.lineTo(18, -28); ctx.lineTo(19, -19); ctx.closePath()
         ctx.fill()
-        // 眼睛（竖瞳）
         ctx.fillStyle = '#ffd76b'
         ctx.beginPath(); ctx.ellipse(10, -14, 2.2, 3, 0, 0, Math.PI * 2); ctx.ellipse(16, -13, 2.2, 3, 0, 0, Math.PI * 2); ctx.fill()
         ctx.fillStyle = '#222'
         ctx.fillRect(9.4, -16.5, 1.4, 5); ctx.fillRect(15.4, -15.5, 1.4, 5)
-        // 胡须
         ctx.strokeStyle = 'rgba(230,230,230,0.7)'; ctx.lineWidth = 1
         ctx.beginPath(); ctx.moveTo(18, -12); ctx.lineTo(26, -13); ctx.moveTo(18, -10); ctx.lineTo(26, -9); ctx.stroke()
         ctx.restore()
-        // 状态气泡 + 吓退进度
-        const scaring = S.speed >= 0.34 && S.broken === 0 && ev.stage === 'stalk'
+        const scaring = S.speed >= 0.765 && S.broken === 0 && ev.stage === 'stalk'
         ctx.font = 'bold 15px sans-serif'; ctx.textAlign = 'center'
         if (ev.stage === 'flee') ctx.fillText('💨', x - dirC * 18, y - 34)
         else if (scaring) ctx.fillText('😾', x, y - 36 - Math.sin(S.tick * 0.4) * 2)
-        else ctx.fillText('👀', x, y - 36)
         if (ev.stage === 'stalk') {
           ctx.fillStyle = 'rgba(0,0,0,0.18)'; ctx.fillRect(x - 22, y + 16, 44, 5)
           ctx.fillStyle = '#f2a232'; ctx.fillRect(x - 22, y + 16, 44 * clamp(ev.scare / 80, 0, 1), 5)
+        }
+      } else if (ev.type === 'golden') {
+        // 金蝉一闪而过：从一侧掠向另一侧，划一道弧线，接住会留一圈闪光
+        const p = 1 - ev.t / 100
+        const gx = ev.fromLeft ? -20 + p * (W + 40) : W + 20 - p * (W + 40)
+        const gy = 96 + Math.sin(p * Math.PI) * 46
+        const glow = ctx.createRadialGradient(gx, gy, 2, gx, gy, ev.caught ? 30 : 20)
+        glow.addColorStop(0, `rgba(255,224,120,${ev.caught ? 0.5 : 0.9})`)
+        glow.addColorStop(1, 'rgba(255,224,120,0)')
+        ctx.fillStyle = glow
+        ctx.beginPath(); ctx.arc(gx, gy, ev.caught ? 30 : 20, 0, Math.PI * 2); ctx.fill()
+        if (!ev.caught) {
+          ctx.save(); ctx.translate(gx, gy); ctx.rotate(Math.sin(S.tick * 0.5) * 0.3)
+          ctx.fillStyle = '#ffd76b'
+          ctx.beginPath(); ctx.ellipse(0, 0, 9, 5, 0, 0, Math.PI * 2); ctx.fill()
+          ctx.fillStyle = '#fff3c4'
+          ctx.beginPath(); ctx.ellipse(-(ev.fromLeft ? 1 : -1) * 10, 0, 5, 2.4, 0, 0, Math.PI * 2); ctx.fill()
+          ctx.restore()
+        } else {
+          ctx.font = 'bold 16px sans-serif'; ctx.textAlign = 'center'; ctx.fillStyle = '#f2b632'
+          ctx.fillText('✨', gx, gy - 22)
         }
       }
     }
 
     const drawSpeedGauge = () => {
-      const night = !!S.mod?.dark
+      const dark = !!S.mod?.dark
       const gx = CX, gy = H - 128, r = 82
       ctx.lineWidth = 14
-      ctx.strokeStyle = night ? 'rgba(255,255,255,0.16)' : 'rgba(0,0,0,0.12)'
+      ctx.strokeStyle = dark ? 'rgba(255,255,255,0.16)' : 'rgba(0,0,0,0.12)'
       ctx.beginPath(); ctx.arc(gx, gy, r, Math.PI, 0); ctx.stroke()
-      const toA = (v) => Math.PI + clamp(v / 0.5, 0, 1) * Math.PI
+      const toA = (v) => Math.PI + clamp(v / 1.125, 0, 1) * Math.PI
       const widen = S.fever > 0 ? 0.05 : 0
       ctx.strokeStyle = S.fever > 0 ? 'rgba(242,182,50,0.95)' : 'rgba(90,170,90,0.85)'
       ctx.beginPath(); ctx.arc(gx, gy, r, toA(S.zone.lo - widen), toA(S.zone.hi + widen)); ctx.stroke()
       ctx.strokeStyle = 'rgba(217,70,62,0.7)'
-      ctx.beginPath(); ctx.arc(gx, gy, r, toA(0.42), toA(0.5)); ctx.stroke()
+      ctx.beginPath(); ctx.arc(gx, gy, r, toA(0.945), toA(1.125)); ctx.stroke()
       // 猫事件：吓退橙区
       if (S.event?.type === 'cat' && S.event.stage === 'stalk') {
         ctx.strokeStyle = `rgba(242,150,50,${0.65 + 0.3 * Math.sin(S.tick * 0.25)})`
-        ctx.beginPath(); ctx.arc(gx, gy, r, toA(0.34), toA(0.42)); ctx.stroke()
+        ctx.beginPath(); ctx.arc(gx, gy, r, toA(0.765), toA(0.945)); ctx.stroke()
       }
       // 内圈：飞天值
       ctx.lineWidth = 8
-      ctx.strokeStyle = night ? 'rgba(255,255,255,0.13)' : 'rgba(0,0,0,0.09)'
+      ctx.strokeStyle = dark ? 'rgba(255,255,255,0.13)' : 'rgba(0,0,0,0.09)'
       ctx.beginPath(); ctx.arc(gx, gy, 60, Math.PI, 0); ctx.stroke()
       const flyFull = S.flyCharge >= 100
       ctx.strokeStyle = flyFull
@@ -759,10 +626,10 @@ export default function Game({ onGameOver, best }) {
         : 'rgba(242,166,50,0.75)'
       ctx.beginPath(); ctx.arc(gx, gy, 60, Math.PI, Math.PI + (clamp(S.flyCharge, 0, 100) / 100) * Math.PI); ctx.stroke()
       const na = toA(S.speed)
-      ctx.strokeStyle = night ? '#ece0c2' : '#333'; ctx.lineWidth = 4
+      ctx.strokeStyle = dark ? '#ece0c2' : '#333'; ctx.lineWidth = 4
       ctx.beginPath(); ctx.moveTo(gx, gy); ctx.lineTo(gx + Math.cos(na) * (r - 4), gy + Math.sin(na) * (r - 4)); ctx.stroke()
-      ctx.fillStyle = night ? '#ece0c2' : '#333'; ctx.beginPath(); ctx.arc(gx, gy, 6, 0, Math.PI * 2); ctx.fill()
-      ctx.font = '13px sans-serif'; ctx.textAlign = 'center'; ctx.fillStyle = night ? '#dccda4' : '#6b5836'
+      ctx.fillStyle = dark ? '#ece0c2' : '#333'; ctx.beginPath(); ctx.arc(gx, gy, 6, 0, Math.PI * 2); ctx.fill()
+      ctx.font = '13px sans-serif'; ctx.textAlign = 'center'; ctx.fillStyle = dark ? '#dccda4' : '#6b5836'
       const msg = S.flight > 0 ? '🛫 飞天表演中——哇！' :
         S.pinched ? '🤏 掐线中·蝉哑了' :
         S.event?.type === 'cat' && S.event.stage === 'stalk' ? '🐱 冲进橙区吓走野猫！' :
@@ -821,6 +688,18 @@ export default function Game({ onGameOver, best }) {
       const droop = clamp(26 - S.speed * 70, 0, 26) // 重力：转速越低越往下坠，甩快了离心力甩平
       const bx = Math.cos(S.angle) * R
       const by = Math.sin(S.angle) * R * 0.55 + droop
+
+      // 软绳手感：蝉的视觉位置不直接等于目标点，而是弹簧-阻尼追赶目标，
+      // 体现加速度与惯性——甩快了蝉会滞后甩出去，减速/掐线时还会因惯性晃一下才收住。
+      if (S.broken <= 0 && S.flight <= 0) {
+        const kSpring = 0.22, damping = 0.72
+        S.cicVX = (S.cicVX + (bx - S.cicX) * kSpring) * damping
+        S.cicVY = (S.cicVY + (by - S.cicY) * kSpring) * damping
+        S.cicPrevX = S.cicX; S.cicPrevY = S.cicY
+        S.cicX += S.cicVX; S.cicY += S.cicVY
+      }
+      const vx = S.cicX - S.cicPrevX, vy = S.cicY - S.cicPrevY
+
       if (S.flight > 0) {
         // 蝉飞走了，空线松松地飘
         ctx.strokeStyle = '#c9b891'
@@ -829,36 +708,37 @@ export default function Game({ onGameOver, best }) {
         ctx.quadraticCurveTo(26, 30 + Math.sin(S.tick * 0.1) * 8, 8, 74)
         ctx.stroke()
       } else if (S.broken > 0) {
-        // 断线：保留水平惯性甩出 + 真实抛物线下坠（先上抛一点，再被重力拉回落地）
+        // 断线：沿甩动惯性甩出 + 真实抛物线下坠（先上抛一点，再被重力拉回落地）
         const t = 1 - S.broken / 70
-        const fallX = bx + bx * 1.8 * t
-        const fallY = by - 50 * t + 330 * t * t
+        const fallX = S.cicX + (S.cicX + vx * 22) * 1.8 * t
+        const fallY = S.cicY - 50 * t + 330 * t * t
         drawCicada(ctx, fallX, fallY, S.angle + t * 10, 1 - t * 0.4)
         ctx.strokeStyle = '#c9b8917f'
-        ctx.beginPath(); ctx.moveTo(0, -8); ctx.lineTo(bx * 0.4, by * 0.4); ctx.stroke()
+        ctx.beginPath(); ctx.moveTo(0, -8); ctx.lineTo(S.cicX * 0.4, S.cicY * 0.4); ctx.stroke()
       } else {
         const tn = clamp(S.tension, 0, 1)
         ctx.strokeStyle = `rgb(${140 + tn * 100}, ${120 - tn * 60}, ${90 - tn * 50})`
         ctx.lineWidth = 1.5 + S.speed * 3
         ctx.beginPath(); ctx.moveTo(0, -8)
+        // 绳子的弯曲控制点随蝉的视觉速度偏移：甩得越快、绳子甩得越弯，静止时自然下垂
         const sag = clamp(30 - S.speed * 90, 0, 30)
-        ctx.quadraticCurveTo(bx * 0.5, by * 0.5 + sag, bx, by)
+        const whip = clamp(vx * -2.2, -22, 22)
+        ctx.quadraticCurveTo(S.cicX * 0.5 + whip, S.cicY * 0.5 + sag - vy * 1.5, S.cicX, S.cicY)
         ctx.stroke()
         ;[0.3, 0.45].forEach((t, i) => {
-          const px = bx * t
-          const py = by * t + sag * 4 * t * (1 - t)
+          const px = S.cicX * t + whip * (1 - t) * 0.6
+          const py = S.cicY * t + sag * 4 * t * (1 - t)
           ctx.fillStyle = i === 0 ? '#d9463e' : '#c23a32'
           ctx.beginPath(); ctx.arc(px, py, 4.5 - i, 0, Math.PI * 2); ctx.fill()
           ctx.fillStyle = 'rgba(255,255,255,0.6)'
           ctx.beginPath(); ctx.arc(px - 1.5, py - 1.5, 1.2, 0, Math.PI * 2); ctx.fill()
         })
-        // 掐线的手指
         if (S.pinched) {
           ctx.fillStyle = '#f2d1a9'
-          ctx.beginPath(); ctx.arc(bx * 0.18, by * 0.18 - 4, 7, 0, Math.PI * 2); ctx.fill()
-          ctx.beginPath(); ctx.arc(bx * 0.18 + 6, by * 0.18 + 2, 6, 0, Math.PI * 2); ctx.fill()
+          ctx.beginPath(); ctx.arc(S.cicX * 0.18, S.cicY * 0.18 - 4, 7, 0, Math.PI * 2); ctx.fill()
+          ctx.beginPath(); ctx.arc(S.cicX * 0.18 + 6, S.cicY * 0.18 + 2, 6, 0, Math.PI * 2); ctx.fill()
         }
-        drawCicada(ctx, bx, by, S.angle + Math.PI / 2, 1)
+        drawCicada(ctx, S.cicX, S.cicY, S.angle + Math.PI / 2 + whip * 0.01, 1)
       }
       ctx.restore()
     }
@@ -890,9 +770,9 @@ export default function Game({ onGameOver, best }) {
     }
 
     const drawCrowd = () => {
-      const night = !!S.mod?.dark
+      const dark = !!S.mod?.dark
       const gy = H - 46
-      ctx.fillStyle = night ? '#4e4234' : '#d9c49a'
+      ctx.fillStyle = dark ? '#4e4234' : '#d9c49a'
       ctx.fillRect(0, gy - 14, W, 60)
       S.crowdFaces.forEach((f, i) => {
         const jy = gy - f.jump
@@ -919,7 +799,7 @@ export default function Game({ onGameOver, best }) {
       grd.addColorStop(0, '#f2b632'); grd.addColorStop(1, '#d9463e')
       ctx.fillStyle = grd
       ctx.fillRect(20, gy + 26, (S.crowd / 100) * (W - 40), 10)
-      ctx.font = '12px sans-serif'; ctx.fillStyle = night ? '#dccda4' : '#6b5836'; ctx.textAlign = 'left'
+      ctx.font = '12px sans-serif'; ctx.fillStyle = dark ? '#dccda4' : '#6b5836'; ctx.textAlign = 'left'
       ctx.fillText(S.fever > 0 ? `🔥 狂欢 ${Math.ceil(S.fever / 60)}s` : '观众欢呼度', 20, gy + 22)
     }
 
@@ -932,7 +812,7 @@ export default function Game({ onGameOver, best }) {
         S.angle += S.speed
         S.voice?.set(S.broken > 0 ? 0 : S.speed * 2, S.pinched, S.angle)
 
-        if (S.speed > 0.42) {
+        if (S.speed > 0.945) {
           S.tension += 0.02 * (S.mod?.snapMult ?? 1)
           if (S.tension >= 1 && S.broken === 0) {
             S.broken = 70; S.speed = 0; S.tension = 0; S.combo = 0; S.brokenN++
@@ -1019,12 +899,11 @@ export default function Game({ onGameOver, best }) {
             maxCombo: S.maxCombo, brokenN: S.brokenN, mod: S.mod,
           }
           // 结算印章：新获得的存入本机
+          const seenMods = addSeenMod(S.mod.id)
           const owned = readStamps()
-          const newStamps = STAMPS.filter((s) => !owned.includes(s.id) && s.test(res))
+          const newStamps = STAMPS.filter((s) => !owned.includes(s.id) && s.test(res, seenMods))
           const stampIds = [...owned, ...newStamps.map((s) => s.id)]
-          if (newStamps.length) {
-            try { localStorage.setItem('zzl_stamps', JSON.stringify(stampIds)) } catch {}
-          }
+          if (newStamps.length) saveStamps(stampIds)
           res.newStamps = newStamps
           res.stampIds = stampIds
           setResult(res)
@@ -1050,6 +929,7 @@ export default function Game({ onGameOver, best }) {
       S.confetti.forEach((c) => { c.x += c.vx; c.y += c.vy; c.rot += c.vr; c.life-- })
       S.confetti = S.confetti.filter((c) => c.life > 0 && c.y < H + 20)
       if (S.shake > 0) { S.shake *= 0.85; if (S.shake < 0.5) S.shake = 0 }
+      if (S.flash > 0) { S.flash *= 0.8; if (S.flash < 0.02) S.flash = 0 }
       return false
     }
 
@@ -1092,6 +972,10 @@ export default function Game({ onGameOver, best }) {
         ctx.fillText(t.text, CX, t.y)
         ctx.globalAlpha = 1
       })
+      if (S.flash > 0) {
+        ctx.fillStyle = `rgba(255,255,255,${S.flash * 0.55})`
+        ctx.fillRect(0, 0, W, H)
+      }
       ctx.restore()
     }
 
@@ -1115,84 +999,32 @@ export default function Game({ onGameOver, best }) {
 
   return (
     <div className="game-wrap" ref={wrapRef}>
-      <div className="hud">
-        <span className="hud-chip">
-          ⭐ {hud.score}
-          {hud.combo >= 2 ? <em className="combo">×{Math.min(hud.combo, 15)}</em> : null}
-        </span>
-        <span className={`hud-chip${phase === 'playing' && hud.time <= 10 ? ' low' : ''}`}>
-          ⏱ {phase === 'playing' ? hud.time : ROUND_TIME}s
-        </span>
-        <span className="hud-chip">🏆 {best}</span>
-        <button
-          className="hud-chip hud-mute"
-          onClick={toggleSound}
-          aria-label={soundOn ? '关闭声音' : '打开声音'}
-        >{soundOn ? '🔊' : '🔇'}</button>
-        {fsOk && (
-          <button
-            className="hud-chip hud-mute"
-            onClick={toggleFull}
-            aria-label={isFull ? '退出全屏' : '全屏游玩'}
-            title={isFull ? '退出全屏' : '全屏游玩'}
-          >{isFull ? '✕' : '⛶'}</button>
-        )}
-      </div>
-      <div className="canvas-box">
-      <canvas
-        ref={canvasRef} width={W} height={H} className="game-canvas"
-        onPointerDown={pDown} onPointerMove={pMove} onPointerUp={pUp} onPointerCancel={pUp}
-        onContextMenu={(e) => e.preventDefault()}
+      <Hud
+        score={hud.score} combo={hud.combo} time={hud.time} playing={phase === 'playing'} best={best}
+        soundOn={soundOn} onToggleSound={toggleSound}
+        fsOk={fsOk} isFull={isFull} onToggleFull={toggleFull}
       />
-      {phase === 'playing' && (
-        <button
-          className="pinch-btn"
-          onPointerDown={(e) => { e.preventDefault(); S.pinched = true }}
-          onPointerUp={() => (S.pinched = false)}
-          onPointerLeave={() => (S.pinched = false)}
-          onPointerCancel={() => (S.pinched = false)}
+      <div className="canvas-box">
+        <canvas
+          ref={canvasRef} width={W} height={H} className="game-canvas"
+          onPointerDown={pDown} onPointerMove={pMove} onPointerUp={pUp} onPointerCancel={pUp}
           onContextMenu={(e) => e.preventDefault()}
-        >🤏 掐线消音<span className="key-hint">（空格）</span></button>
-      )}
-      {phase === 'playing' && hud.fly && (
-        <button className="fly-btn" onClick={tryFly}>🚀 放飞！</button>
-      )}
-      {phase === 'ready' && (
-        <div className="overlay-panel">
-          <h2>🏮 竹知了演奏会</h2>
-          <p className="rules">
-            按住画面绕中心 <b>画圈甩动</b>，指针稳在 <span style={{ color: '#7ed07e' }}>■ 绿区</span> 持续得分，
-            甩进 <span style={{ color: '#ff9088' }}>■ 红区</span> 线会绷断<br />
-            🤏 <b>掐线</b>（空格/按钮）立刻消音——老爷爷打盹时保持安静<br />
-            🌳 野蝉起调，稳住绿区 <b>对唱</b>；🐱 野猫扑来，<b>甩快些</b>吓走它<br />
-            欢呼度攒满触发 🔥 <b>狂欢</b>；绿区蓄满飞天值 → 🚀 <b>放飞</b>（F / 摇一摇）飞上天！<br />
-            每场随机一个 <b>彩头</b>（共 14 种场景），攒印章解锁成就～
-          </p>
-          <button onClick={start}>开演！（{ROUND_TIME} 秒）</button>
-          <p className="science-note">
-            冷知识：掐线消音是真的——真实竹知了靠线与竹棒上的松香摩擦振动、
-            经筒口薄膜共鸣发声，掐住线摩擦停了，声音源头就被切断了。
-          </p>
-        </div>
-      )}
-      {phase === 'over' && result && (
-        <div className="overlay-panel">
-          <h2>🍵 曲终收工</h2>
-          <p className="title-badge">{result.title}</p>
-          {result.mod && <p className="mod-line">{result.mod.icon} 本场彩头 · {result.mod.name}</p>}
-          <p>本场得分 <b>{result.score}</b></p>
-          <p className="stats-line">
-            😴 ×{result.stats.naps} · 🐝 ×{result.stats.duets} · 🐱 ×{result.stats.cats} · 🚀 ×{result.stats.flights} · 🔥 ×{result.stats.feverN}
-          </p>
-          {result.newStamps?.length > 0 && (
-            <p className="new-stamps">
-              🧧 新收印章：{result.newStamps.map((s) => `${s.icon}${s.name}`).join(' · ')}
-            </p>
-          )}
-          {result.score >= best && best > 0 && <p className="newbest">🎉 新纪录！</p>}
-          <button onClick={start}>再来一场</button>
-        </div>
-      )}
+        />
+        {phase === 'playing' && (
+          <button
+            className="pinch-btn"
+            onPointerDown={(e) => { e.preventDefault(); S.pinched = true }}
+            onPointerUp={() => (S.pinched = false)}
+            onPointerLeave={() => (S.pinched = false)}
+            onPointerCancel={() => (S.pinched = false)}
+            onContextMenu={(e) => e.preventDefault()}
+          >🤏 掐线消音<span className="key-hint">（空格）</span></button>
+        )}
+        {phase === 'playing' && hud.fly && (
+          <button className="fly-btn" onClick={tryFly}>🚀 放飞！</button>
+        )}
+        {phase === 'ready' && <ReadyOverlay onStart={start} />}
+        {phase === 'over' && result && <GameOverOverlay result={result} best={best} onRestart={start} />}
       </div>
       <div className="hint">
         {phase === 'playing'
