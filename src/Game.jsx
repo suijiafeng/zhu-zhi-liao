@@ -1029,7 +1029,7 @@ export default function Game({ onGameOver, best }) {
       <div className="hint">
         {phase === 'playing'
           ? `${modInfo ? `${modInfo.icon} ${modInfo.name} · ` : ''}持续画圈（甩出画面也不断）· 留意两侧突发事件`
-          : '💡 建议开声音：甩得慢像蛙鸣，甩得快像知了，都是实时合成的'}
+          : '💡 开声音玩：蝉鸣是实时合成的'}
       </div>
     </div>
   )

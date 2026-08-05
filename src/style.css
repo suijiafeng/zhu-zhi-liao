@@ -50,13 +50,17 @@ h1 {
 }
 .seal { font-size: 0.55em; color: var(--red); font-weight: 500; margin-left: 4px; }
 .subtitle { margin: 3px 0 0; color: var(--ink-soft); font-size: 12.5px; }
-.theme-tags { margin: 6px 0 0; display: flex; gap: 6px; justify-content: center; }
+.theme-tags { margin: 7px 0 0; display: flex; gap: 5px; justify-content: center; }
 .theme-tags span {
   font-size: 10.5px;
+  letter-spacing: 0.08em;
   color: var(--ink-soft);
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  padding: 2px 9px;
+  padding: 2px 4px;
+}
+.theme-tags span + span::before {
+  content: "·";
+  margin-right: 9px;
+  opacity: 0.5;
 }
 
 /* ===================== 布局：游戏是主体，侧栏是文字附注 ===================== */
@@ -67,10 +71,16 @@ h1 {
   align-items: start;
   justify-content: center;
 }
-.side { display: grid; gap: 2px; align-content: start; }
+.side { display: grid; gap: 6px; align-content: start; }
+/* 平板 / 手机横屏：折叠条两列排，省纵向滚动 */
+@media (min-width: 600px) and (max-width: 919px) {
+  .side { grid-template-columns: 1fr 1fr; }
+  .side .card[open] { grid-column: 1 / -1; }
+}
+/* PC：游戏居左主体 + 固定侧栏 */
 @media (min-width: 920px) {
-  .layout { grid-template-columns: minmax(560px, 820px) 200px; }
-  .side { position: sticky; top: 12px; max-height: calc(100dvh - 24px); overflow-y: auto; }
+  .layout { grid-template-columns: minmax(560px, 820px) 240px; }
+  .side { position: sticky; top: 12px; max-height: calc(100dvh - 24px); overflow-y: auto; scrollbar-width: thin; }
 }
 
 /* ===================== 游戏舞台：不加卡片外壳，画布本身就是焦点 ===================== */
@@ -151,6 +161,21 @@ button.hud-mute:active { opacity: 0.6; }
   text-align: center;
   font-size: 12.5px;
   color: var(--ink-soft);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 手机：头部收紧，首屏尽量把完整画布露出来 */
+@media (max-width: 600px) {
+  .page { padding-top: 8px; }
+  .site-header { padding-bottom: 5px; }
+  h1 { font-size: 19px; }
+  .subtitle { font-size: 11.5px; }
+  .theme-tags { margin-top: 4px; }
+  .theme-tags span { font-size: 10px; padding: 1px 3px; }
+  .hud { gap: 10px; margin-bottom: 6px; font-size: 12.5px; }
+  .hint { margin-top: 6px; font-size: 11.5px; }
 }
 
 /* ===================== 覆盖层（开场 / 结算） ===================== */
@@ -181,6 +206,21 @@ button.hud-mute:active { opacity: 0.6; }
   font-weight: 600;
 }
 .overlay-panel .rules { line-height: 1.9; font-size: clamp(12.5px, 3.4vw, 14px); margin: 8px 0 0; opacity: 0.92; }
+.rules-list {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  text-align: left;
+  font-size: clamp(12.5px, 3.5vw, 14px);
+  line-height: 1.7;
+  display: grid;
+  gap: 7px;
+  max-width: 340px;
+}
+.rules-list b { color: #ffe9b0; }
+.rules-list .k { font-weight: 700; padding: 0 2px; }
+.rules-list .k.green { color: #7ed07e; }
+.rules-list .k.red { color: #ff9088; }
 .overlay-panel button {
   margin-top: 16px;
   padding: 10px 32px;

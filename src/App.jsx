@@ -50,11 +50,6 @@ export default function App() {
           </details>
 
           <details className="card">
-            <summary>🎭 彩头图鉴</summary>
-            <ModCodex />
-          </details>
-
-          <details className="card">
             <summary>🧧 印章收集 <span className="count">{stamps.length}/{STAMPS.length}</span></summary>
             <StampWall earned={stamps} />
           </details>
@@ -80,6 +75,10 @@ export default function App() {
             </p>
             <p className="fine">
               本页蝉鸣由 Web Audio 实时合成，转速慢时偏"呱呱"蛙鸣，甩快了过渡成"嘎哇"知了声，建议开声游玩。
+            </p>
+            <p className="fine">
+              冷知识：掐线消音是真的——真实竹知了靠线与竹棒上的松香摩擦振动、
+              经筒口薄膜共鸣发声，掐住线摩擦停了，声音源头就被切断了。
             </p>
           </details>
         </aside>
