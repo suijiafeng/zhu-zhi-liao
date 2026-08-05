@@ -21,7 +21,7 @@ export default function App() {
     <div className="page">
       <header className="site-header">
         <h1>🎋 竹知了<span className="seal">鸣</span></h1>
-        <p className="subtitle">摇一摇，飞上天 · 听它"嘎哇嘎哇"地叫</p>
+        <p className="subtitle">摇一摇，飞上天 · 听它"呱呱嘎哇"地叫</p>
       </header>
 
       <main className="layout">
@@ -77,7 +77,7 @@ export default function App() {
               是许多人童年庙会里几毛钱的快乐。
             </p>
             <p className="fine">
-              本页蝉鸣由 Web Audio 实时合成——双共振峰调出"唐老鸭"式的嘎哇声，建议开声游玩。
+              本页蝉鸣由 Web Audio 实时合成，转速慢时偏"呱呱"蛙鸣，甩快了过渡成"嘎哇"知了声，建议开声游玩。
             </p>
           </details>
         </aside>

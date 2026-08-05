@@ -16,121 +16,102 @@ const getCtx = () => {
   return actx
 }
 
-// 方案2·噪声整形：真实蝉鸣本质是鼓膜屈曲的一串"咔嗒"点击，
-// 经共鸣腔滤波后才有嗡嗡感 —— 用一段循环白噪声顶替/叠加纯音调振荡器，
-// 沙哑颗粒感比纯音调更接近本体。缓存一份，避免重复生成。
-let noiseBuf = null
-const getNoiseBuffer = (ctx) => {
-  if (!noiseBuf) {
-    const len = ctx.sampleRate * 2
-    noiseBuf = ctx.createBuffer(1, len, ctx.sampleRate)
-    const data = noiseBuf.getChannelData(0)
-    for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1
-  }
-  return noiseBuf
-}
-
-// 竹知了的"哇哇"往"唐老鸭"方向调：
-// 双失谐锯齿声源(拍频沙哑) + 锯齿相位包络(每声"哇"急起慢落、尾音下坠)
-// + 双共振峰带通(颊语式的鼻腔"嘎"感) + 27Hz 小抖动(粗嗓)
+// 真实竹知了是线在松香上"黏—滑"交替摩擦产生脉冲，经筒口薄膜共鸣放大。
+// 合成链路：低频锯齿波 → 失真 → LFO 调幅(黏滑脉冲) → 相位扫频"哇音"带通
+//          → 三个共振峰(模拟薄膜腔体) + 摩擦噪声层 → 压限输出
 function createCicadaVoice() {
   const ctx = getCtx()
+
+  // 主振荡：低基频锯齿波（真实玩具基频很低，"哇"的音色靠共振峰塑形）
   const osc = ctx.createOscillator()
-  const osc2 = ctx.createOscillator()
-  const gate = ctx.createGain()       // 被包络门控 -> 一声一声的"嘎哇"
-  const lfo = ctx.createOscillator()
-  const lfoShape = ctx.createWaveShaper()
-  const lfoGain = ctx.createGain()
-  const droop = ctx.createGain()
-  const jit = ctx.createOscillator()
-  const jitGain = ctx.createGain()
-  const f1 = ctx.createBiquadFilter()
-  const f1g = ctx.createGain()
-  const f2 = ctx.createBiquadFilter()
-  const f2g = ctx.createGain()
-  const f3 = ctx.createBiquadFilter()   // 青蛙的低频空心"呱"共鸣，慢甩时主导
-  const f3g = ctx.createGain()
-  const master = ctx.createGain()
-  const noise = ctx.createBufferSource()
-  const noiseGain = ctx.createGain()
-  const panner = ctx.createStereoPanner ? ctx.createStereoPanner() : null
+  osc.type = 'sawtooth'
+  osc.frequency.value = 70
 
-  osc.type = 'sawtooth'; osc.frequency.value = 170
-  osc2.type = 'sawtooth'; osc2.frequency.value = 176 // ~3.5% 失谐 -> 拍频粗糙感
-  const og2 = ctx.createGain(); og2.gain.value = 0.6
-
-  // 锯齿 LFO 当相位用：波形表即逐"哇"包络（快攻 + 缓释）
-  lfo.type = 'sawtooth'; lfo.frequency.value = 5
-  const N = 1024
-  const curve = new Float32Array(N)
-  for (let i = 0; i < N; i++) {
-    const t = i / (N - 1)
-    curve[i] = 0.04 + 0.96 * (t < 0.13 ? t / 0.13 : Math.pow(1 - (t - 0.13) / 0.87, 1.4))
+  // 失真：让摩擦声有毛刺感
+  const shaper = ctx.createWaveShaper()
+  {
+    const n = 1024
+    const curve = new Float32Array(n)
+    for (let i = 0; i < n; i++) {
+      const x = (i / (n - 1)) * 2 - 1
+      curve[i] = Math.tanh(x * 3)
+    }
+    shaper.curve = curve
+    shaper.oversample = '2x'
   }
-  lfoShape.curve = curve
-  lfoGain.gain.value = 1
-  lfo.connect(lfoShape).connect(lfoGain).connect(gate.gain)
-  gate.gain.value = 0
+  osc.connect(shaper)
 
-  // 包络顺带拽音高：攻击时最高、随衰减下坠 -> "哇↘"的鸭叫尾音
-  droop.gain.value = 42
-  lfoShape.connect(droop)
-  droop.connect(osc.frequency); droop.connect(osc2.frequency)
+  // 黏滑脉冲：LFO 调幅
+  const am = ctx.createGain(); am.gain.value = 0.6
+  const lfo = ctx.createOscillator()
+  lfo.type = 'sine'; lfo.frequency.value = 24
+  const lfoAmt = ctx.createGain(); lfoAmt.gain.value = 0.35
+  lfo.connect(lfoAmt).connect(am.gain)
+  shaper.connect(am)
 
-  // 快速小幅抖动 -> 沙哑
-  jit.type = 'sine'; jit.frequency.value = 27
-  jitGain.gain.value = 6
-  jit.connect(jitGain)
-  jitGain.connect(osc.frequency); jitGain.connect(osc2.frequency)
+  // 摩擦噪声层
+  const nBuf = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate)
+  const nd = nBuf.getChannelData(0)
+  for (let i = 0; i < nd.length; i++) nd[i] = Math.random() * 2 - 1
+  const noise = ctx.createBufferSource()
+  noise.buffer = nBuf; noise.loop = true
+  const nFil = ctx.createBiquadFilter()
+  nFil.type = 'bandpass'; nFil.frequency.value = 2500; nFil.Q.value = 0.7
+  const nGain = ctx.createGain(); nGain.gain.value = 0
+  noise.connect(nFil).connect(nGain)
 
-  // 三路共振峰并联：~950Hz 主峰 + ~2.4kHz 鼻峰（知了）+ ~400Hz 空心峰（青蛙），
-  // 转速低时突出蛙峰、压低知了峰；转速高时反过来 —— 在 .set() 里按 speed 交叉渐变
-  f1.type = 'bandpass'; f1.frequency.value = 950; f1.Q.value = 7
-  f1g.gain.value = 1
-  f2.type = 'bandpass'; f2.frequency.value = 2400; f2.Q.value = 9
-  f2g.gain.value = 0.55
-  f3.type = 'bandpass'; f3.frequency.value = 400; f3.Q.value = 11
-  f3g.gain.value = 0
-  master.gain.value = 0
+  const bus = ctx.createGain(); bus.gain.value = 0.9
+  am.connect(bus); nGain.connect(bus)
 
-  // 噪声层：和音调振荡器共用同一个 gate 包络 + 共振峰，
-  // 叠加后音色带上"沙沙"颗粒感，不再是纯净电子音
-  noise.buffer = getNoiseBuffer(ctx); noise.loop = true
-  noiseGain.gain.value = 0.4
+  // "哇音"带通：中心频率随甩动相位摆动（哇~的开合感）
+  const wah = ctx.createBiquadFilter()
+  wah.type = 'bandpass'; wah.frequency.value = 900; wah.Q.value = 2.2
+  bus.connect(wah)
 
-  osc.connect(gate)
-  osc2.connect(og2).connect(gate)
-  noise.connect(noiseGain).connect(gate)
-  gate.connect(f1).connect(f1g).connect(master)
-  gate.connect(f2).connect(f2g).connect(master)
-  gate.connect(f3).connect(f3g).connect(master)
-  if (panner) { master.connect(panner).connect(ctx.destination) } else { master.connect(ctx.destination) }
-  osc.start(); osc2.start(); lfo.start(); jit.start(); noise.start()
+  // 三个共振峰：模拟筒口薄膜 + 竹筒腔体的固有共振
+  const sum = ctx.createGain(); sum.gain.value = 1
+  ;[[1050, 9, 0.9], [2150, 11, 0.6], [3350, 13, 0.4]].forEach(([f, q, g]) => {
+    const bp = ctx.createBiquadFilter()
+    bp.type = 'bandpass'; bp.frequency.value = f; bp.Q.value = q
+    const fg = ctx.createGain(); fg.gain.value = g
+    wah.connect(bp).connect(fg).connect(sum)
+  })
+  const bleed = ctx.createGain(); bleed.gain.value = 0.08
+  wah.connect(bleed).connect(sum)
+
+  const hp = ctx.createBiquadFilter()
+  hp.type = 'highpass'; hp.frequency.value = 360
+  const master = ctx.createGain(); master.gain.value = 0
+  const comp = ctx.createDynamicsCompressor()
+  comp.threshold.value = -18; comp.ratio.value = 8
+  comp.attack.value = 0.004; comp.release.value = 0.18
+  const panner = ctx.createStereoPanner ? ctx.createStereoPanner() : null
+  sum.connect(hp).connect(master).connect(comp)
+  if (panner) { comp.connect(panner).connect(ctx.destination) } else { comp.connect(ctx.destination) }
+
+  osc.start(); lfo.start(); noise.start()
 
   return {
-    set(speed, pinched, angle) { // speed 0-1；angle：甩动角度，驱动声像随位置左右摆动
+    // speed: 0-1 强度；theta: 当前甩动角度（相位联动的关键）
+    set(speed, pinched, theta = 0) {
       const t = ctx.currentTime
-      const on = speed > 0.1 && !pinched && !muted
-      master.gain.setTargetAtTime(on ? clamp(speed * 0.45, 0, 0.38) : 0, t, pinched ? 0.015 : 0.05)
-      // frogT: 0=纯知了嘎哇，1=纯青蛙呱呱；甩得越慢越像蛙，甩快了过渡成知了
-      const frogT = clamp(1 - speed / 0.32, 0, 1)
-      const f0 = 100 + speed * 230
+      const active = pinched ? 0 : clamp(speed, 0, 1)
+      master.gain.setTargetAtTime(0.8 * Math.pow(active, 1.3), t, pinched ? 0.015 : 0.07)
+      // 低基频 + 每圈一摆的音高微颤（张力/多普勒感）
+      const f0 = clamp(55 + speed * 140, 50, 195)
       osc.frequency.setTargetAtTime(f0, t, 0.06)
-      osc2.frequency.setTargetAtTime(f0 * 1.035, t, 0.06)
-      lfo.frequency.setTargetAtTime(2 + speed * 13, t, 0.08) // 蛙鸣慢而分明的"呱…呱"，知了密而连续的"嘎哇"
-      f1.frequency.setTargetAtTime(880 + speed * 320, t, 0.06)
-      f2.frequency.setTargetAtTime(2250 + speed * 500, t, 0.06)
-      f3.frequency.setTargetAtTime(370 + speed * 90, t, 0.06)
-      f1g.gain.setTargetAtTime(0.25 + 0.75 * (1 - frogT), t, 0.08)   // 蛙鸣时弱化知了中频
-      f2g.gain.setTargetAtTime(0.55 * (1 - frogT * 0.85), t, 0.08)  // 蛙鸣时弱化知了鼻音高频
-      f3g.gain.setTargetAtTime(frogT * 0.85, t, 0.08)                // 蛙鸣的空心共鸣，转速起来就退场
-      noiseGain.gain.setTargetAtTime((0.1 + speed * 0.55) * (1 - frogT * 0.55), t, 0.08) // 蛙鸣沙沙感更少，更"净"
-      // bx = cos(angle)*R 是蝉的左右位置，cos(angle) 天然落在 [-1,1]，直接映射声像
-      if (panner && angle !== undefined) {
-        panner.pan.setTargetAtTime(clamp(Math.cos(angle) * 0.85, -1, 1), t, 0.05)
-      }
+      osc.detune.setTargetAtTime(46 * Math.sin(theta + 0.9) * clamp(active * 1.6, 0, 1), t, 0.03)
+      // 黏滑脉冲密度随转速
+      lfo.frequency.setTargetAtTime(20 + speed * 22, t, 0.1)
+      // "哇音"扫频随相位开合 —— 哇~哇~ 的灵魂；乘个倍数让每圈里"哇"的次数变多、周期更短
+      const wf = 760 + 520 * active + (430 + 330 * active) * Math.sin(theta * 1.6 - 0.7)
+      wah.frequency.setTargetAtTime(Math.max(320, wf), t, 0.025)
+      // 摩擦噪声
+      nGain.gain.setTargetAtTime(0.03 + 0.16 * active, t, 0.08)
+      // 声像随甩动位置左右摆动
+      if (panner) panner.pan.setTargetAtTime(clamp(Math.cos(theta) * 0.85, -1, 1), t, 0.05)
     },
-    stop() { try { osc.stop(); osc2.stop(); lfo.stop(); jit.stop(); noise.stop() } catch {} },
+    stop() { try { osc.stop(); lfo.stop(); noise.stop() } catch {} },
   }
 }
 const beep = (f, d = 0.12, type = 'sine', v = 0.15, slide = 0, bp = 0) => {
@@ -1216,7 +1197,7 @@ export default function Game({ onGameOver, best }) {
       <div className="hint">
         {phase === 'playing'
           ? `${modInfo ? `${modInfo.icon} ${modInfo.name} · ` : ''}持续画圈（甩出画面也不断）· 留意两侧突发事件`
-          : '💡 建议开声音："嘎哇嘎哇"的鸭叫蝉鸣是实时合成的'}
+          : '💡 建议开声音：甩得慢像蛙鸣，甩得快像知了，都是实时合成的'}
       </div>
     </div>
   )
