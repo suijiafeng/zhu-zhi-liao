@@ -54,6 +54,12 @@ function baseRoundFields(mode = 'classic', mod = null) {
     lightningTimer: null,
     flyCharge: 0,
     flight: 0,
+    cicX: 120,
+    cicY: 26,
+    cicVX: 0,
+    cicVY: 0,
+    cicPrevX: 120,
+    cicPrevY: 26,
   }
 }
 
@@ -89,6 +95,13 @@ export function resetRound(S, mode) {
   S.confetti = []
   S.scenery = []
   S.trail = []
+  const R = S.layout?.radius || 120
+  S.cicX = R
+  S.cicY = 26
+  S.cicVX = 0
+  S.cicVY = 0
+  S.cicPrevX = S.cicX
+  S.cicPrevY = S.cicY
   S.crowdFaces.forEach((f) => {
     f.jump = 0
     f.wa = 0

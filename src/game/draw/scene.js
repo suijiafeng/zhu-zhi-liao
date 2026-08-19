@@ -519,130 +519,261 @@ function drawSpeedGauge(ctx, S, W, H, CX) {
   ctx.fillText(msg, gx, gy + 26)
 }
 
-function drawCicada(c, S, x, y, rot, alpha) {
+function drawCicada(c, S, x, y, rot, alpha, opts = {}) {
+  const scale = opts.scale ?? 1
+  const pitch = opts.pitch ?? 1
+  const depth = opts.depth ?? 0
+
   c.save()
   c.translate(x, y)
   c.rotate(rot)
+  c.scale(scale, scale * pitch)
   c.globalAlpha = alpha
-  const flut = S.speed > 0.1 && !S.pinched ? Math.sin(S.tick * 1.2) * 0.18 : 0
+
+  const flut = S.speed > 0.1 && !S.pinched && S.flight === 0 ? Math.sin(S.tick * 1.2) * 0.18 : 0
+  const contrast = 0.85 + depth * 0.15
+
   const wing = (side) => {
     c.save()
     c.rotate(side * (0.32 + flut * side))
-    const wg = c.createLinearGradient(0, 0, -44, 0)
-    wg.addColorStop(0, '#e6d3ac')
-    wg.addColorStop(1, '#cdb384')
+    const wg = c.createLinearGradient(0, -6, -44, 8)
+    wg.addColorStop(0, `rgba(246,232,198,${0.92 * contrast})`)
+    wg.addColorStop(0.45, `rgba(230,211,172,${0.75 * contrast})`)
+    wg.addColorStop(1, `rgba(180,150,100,${0.35 * contrast})`)
     c.fillStyle = wg
-    c.strokeStyle = '#b09468'
+    c.strokeStyle = 'rgba(140,110,70,0.55)'
     c.lineWidth = 1.2
     c.beginPath()
     c.ellipse(-24, side * 5, 24, 7.5, side * 0.12, 0, Math.PI * 2)
     c.fill()
     c.stroke()
-    c.strokeStyle = 'rgba(150,120,80,0.5)'
+    c.strokeStyle = 'rgba(150,120,80,0.45)'
     c.beginPath()
     c.moveTo(-4, side * 3)
     c.lineTo(-44, side * 7)
+    c.moveTo(-8, side * 4)
+    c.lineTo(-36, side * 8)
+    c.stroke()
+    c.strokeStyle = `rgba(255,248,220,${0.35 + depth * 0.2})`
+    c.lineWidth = 1
+    c.beginPath()
+    c.ellipse(-22, side * 4.2, 18, 4.5, side * 0.12, -0.8, 0.6)
     c.stroke()
     c.restore()
   }
   wing(-1)
   wing(1)
-  const bg = c.createLinearGradient(0, -9, 0, 9)
-  bg.addColorStop(0, '#dcc79c')
-  bg.addColorStop(0.45, '#efe0bc')
-  bg.addColorStop(1, '#c4aa7c')
+
+  const bg = c.createLinearGradient(-6, -10, 10, 10)
+  bg.addColorStop(0, '#f0e2bf')
+  bg.addColorStop(0.35, '#e6d3a4')
+  bg.addColorStop(0.7, '#c9ae7a')
+  bg.addColorStop(1, '#9e8258')
   c.fillStyle = bg
-  c.strokeStyle = '#a8894f'
-  c.lineWidth = 1
+  c.strokeStyle = '#8a6e42'
+  c.lineWidth = 1.1
   roundRect(c, -14, -9, 26, 18, 4)
   c.fill()
   c.stroke()
-  c.fillStyle = '#d9463e'
+
+  c.fillStyle = 'rgba(80,55,30,0.18)'
+  roundRect(c, -12, 2, 22, 6, 2)
+  c.fill()
+
+  c.fillStyle = `rgba(255,250,230,${0.35 + depth * 0.15})`
+  roundRect(c, -11, -8, 18, 4, 2)
+  c.fill()
+
+  const mouth = c.createLinearGradient(8, -9, 16, 9)
+  mouth.addColorStop(0, '#e85a50')
+  mouth.addColorStop(0.5, '#d9463e')
+  mouth.addColorStop(1, '#9e2a24')
+  c.fillStyle = mouth
   roundRect(c, 8, -9, 6, 18, [0, 4, 4, 0])
   c.fill()
-  c.fillStyle = '#b8352e'
+  c.fillStyle = '#8a221c'
   c.beginPath()
   c.ellipse(14, 0, 2.5, 9, 0, 0, Math.PI * 2)
   c.fill()
+  c.fillStyle = 'rgba(255,200,180,0.35)'
+  c.beginPath()
+  c.ellipse(10, -4, 1.4, 3, 0, 0, Math.PI * 2)
+  c.fill()
+
   c.fillStyle = '#1a1a1a'
   c.beginPath()
-  c.arc(10, -8, 3, 0, Math.PI * 2)
-  c.arc(10, 8, 3, 0, Math.PI * 2)
+  c.arc(10, -8, 3.2, 0, Math.PI * 2)
+  c.arc(10, 8, 3.2, 0, Math.PI * 2)
   c.fill()
-  c.fillStyle = 'rgba(255,255,255,0.7)'
+  c.fillStyle = 'rgba(255,255,255,0.75)'
   c.beginPath()
-  c.arc(9, -9, 1, 0, Math.PI * 2)
-  c.arc(9, 7, 1, 0, Math.PI * 2)
+  c.arc(9, -9, 1.1, 0, Math.PI * 2)
+  c.arc(9, 7, 1.1, 0, Math.PI * 2)
   c.fill()
+  c.fillStyle = 'rgba(255,255,255,0.25)'
+  c.beginPath()
+  c.arc(11, -7, 0.7, 0, Math.PI * 2)
+  c.arc(11, 9, 0.7, 0, Math.PI * 2)
+  c.fill()
+
   c.restore()
+}
+
+function drawCicadaShadow(ctx, x, y, scale, depth) {
+  const near = (depth + 1) * 0.5
+  ctx.save()
+  ctx.translate(x + 4 * scale, y + 14 * scale)
+  ctx.scale(1, 0.38)
+  ctx.fillStyle = `rgba(40,28,12,${0.12 + near * 0.22})`
+  ctx.beginPath()
+  ctx.ellipse(0, 0, 22 * scale * (0.85 + near * 0.25), 10 * scale, 0, 0, Math.PI * 2)
+  ctx.fill()
+  ctx.restore()
 }
 
 function drawToy(ctx, S) {
   const { cx: CX, cy: CY, radius: R } = S.layout
   ctx.save()
   ctx.translate(CX, CY)
+
   ctx.save()
   ctx.rotate(0.35)
-  const hg = ctx.createLinearGradient(-3, 0, 3, 0)
-  hg.addColorStop(0, '#c8ab74')
-  hg.addColorStop(0.5, '#e2cb9b')
-  hg.addColorStop(1, '#b3945c')
+  const hg = ctx.createLinearGradient(-4, 0, 5, 0)
+  hg.addColorStop(0, '#a88855')
+  hg.addColorStop(0.35, '#e8d4a8')
+  hg.addColorStop(0.7, '#c8ab74')
+  hg.addColorStop(1, '#8a6a3c')
   ctx.fillStyle = hg
-  roundRect(ctx, -3, -12, 6, 78, 3)
+  roundRect(ctx, -3.5, -12, 7, 78, 3)
   ctx.fill()
-  ctx.fillStyle = 'rgba(255,220,120,0.8)'
-  roundRect(ctx, -3, -12, 6, 16, 3)
+  ctx.fillStyle = 'rgba(60,40,15,0.25)'
+  roundRect(ctx, 1.5, -10, 2.2, 74, 1)
+  ctx.fill()
+  const ros = ctx.createLinearGradient(-3, -12, 4, 6)
+  ros.addColorStop(0, 'rgba(255,240,160,0.95)')
+  ros.addColorStop(0.5, 'rgba(255,210,90,0.85)')
+  ros.addColorStop(1, 'rgba(200,140,40,0.5)')
+  ctx.fillStyle = ros
+  roundRect(ctx, -3.5, -12, 7, 16, 3)
   ctx.fill()
   ctx.restore()
 
+  const droop = clamp(26 - S.speed * 70, 0, 26)
   const bx = Math.cos(S.angle) * R
-  const by = Math.sin(S.angle) * R * 0.55
+  const by = Math.sin(S.angle) * R * 0.55 + droop
+  const depth = Math.sin(S.angle)
+  const scale = 0.82 + ((depth + 1) * 0.5) * 0.3
+  const pitch = 0.92 + ((depth + 1) * 0.5) * 0.13
+
+  if (S.cicX == null) {
+    S.cicX = bx
+    S.cicY = by
+    S.cicVX = 0
+    S.cicVY = 0
+    S.cicPrevX = bx
+    S.cicPrevY = by
+  }
+
   if (S.broken > 0) {
     const t = 1 - S.broken / 70
-    drawCicada(ctx, S, bx * (1 + t * 3), by * (1 + t * 3) + t * t * 160, S.angle + t * 10, 1 - t * 0.4)
+    const ox = S.cicX
+    const oy = S.cicY
+    const fx = ox * (1 + t * 3)
+    const fy = oy * (1 + t * 3) + t * t * 160
+    drawCicadaShadow(ctx, fx, fy, scale * (1 - t * 0.3), depth)
+    drawCicada(ctx, S, fx, fy, S.angle + t * 10, 1 - t * 0.4, {
+      scale: scale * (1 - t * 0.15),
+      pitch,
+      depth,
+    })
     ctx.strokeStyle = '#c9b8917f'
+    ctx.lineWidth = 1.5
     ctx.beginPath()
     ctx.moveTo(0, -8)
-    ctx.lineTo(bx * 0.4, by * 0.4)
+    ctx.lineTo(ox * 0.4, oy * 0.4)
     ctx.stroke()
   } else {
+    const kSpring = 0.22
+    const damping = 0.72
+    S.cicPrevX = S.cicX
+    S.cicPrevY = S.cicY
+    S.cicVX = (S.cicVX + (bx - S.cicX) * kSpring) * damping
+    S.cicVY = (S.cicVY + (by - S.cicY) * kSpring) * damping
+    S.cicX += S.cicVX
+    S.cicY += S.cicVY
+
+    const vx = S.cicX - S.cicPrevX
+    const vy = S.cicY - S.cicPrevY
+    const sag = clamp(30 - S.speed * 90, 0, 30)
+    const whip = clamp(vx * -2.2, -22, 22)
     const tn = clamp(S.tension, 0, 1)
+
     ctx.strokeStyle = `rgb(${140 + tn * 100}, ${120 - tn * 60}, ${90 - tn * 50})`
     ctx.lineWidth = 1.5 + S.speed * 3
+    ctx.lineCap = 'round'
     ctx.beginPath()
     ctx.moveTo(0, -8)
-    const sag = clamp(30 - S.speed * 90, 0, 30)
-    ctx.quadraticCurveTo(bx * 0.5, by * 0.5 + sag, bx, by)
+    ctx.quadraticCurveTo(
+      S.cicX * 0.5 + whip,
+      S.cicY * 0.5 + sag - vy * 1.5,
+      S.cicX,
+      S.cicY,
+    )
     ctx.stroke()
+    ctx.strokeStyle = 'rgba(255,240,200,0.25)'
+    ctx.lineWidth = 0.8
+    ctx.beginPath()
+    ctx.moveTo(0, -9)
+    ctx.quadraticCurveTo(
+      S.cicX * 0.5 + whip - 1,
+      S.cicY * 0.5 + sag - vy * 1.5 - 1,
+      S.cicX - 1,
+      S.cicY - 1,
+    )
+    ctx.stroke()
+
     ;[0.3, 0.45].forEach((t, i) => {
-      const px = bx * t
-      const py = by * t + sag * 4 * t * (1 - t)
-      ctx.fillStyle = i === 0 ? '#d9463e' : '#c23a32'
+      const px = S.cicX * t + whip * (1 - t) * 0.6
+      const py = S.cicY * t + sag * 4 * t * (1 - t)
+      const bead = ctx.createRadialGradient(px - 1.5, py - 1.5, 0.5, px, py, 5 - i)
+      bead.addColorStop(0, '#ff8a7a')
+      bead.addColorStop(0.55, i === 0 ? '#d9463e' : '#c23a32')
+      bead.addColorStop(1, '#8a221c')
+      ctx.fillStyle = bead
       ctx.beginPath()
       ctx.arc(px, py, 4.5 - i, 0, Math.PI * 2)
       ctx.fill()
-      ctx.fillStyle = 'rgba(255,255,255,0.6)'
+      ctx.fillStyle = 'rgba(255,255,255,0.55)'
       ctx.beginPath()
       ctx.arc(px - 1.5, py - 1.5, 1.2, 0, Math.PI * 2)
       ctx.fill()
     })
+
     if (S.pinched) {
       ctx.fillStyle = '#f2d1a9'
       ctx.beginPath()
-      ctx.arc(bx * 0.18, by * 0.18 - 4, 7, 0, Math.PI * 2)
+      ctx.arc(S.cicX * 0.18, S.cicY * 0.18 - 4, 7, 0, Math.PI * 2)
       ctx.fill()
       ctx.beginPath()
-      ctx.arc(bx * 0.18 + 6, by * 0.18 + 2, 6, 0, Math.PI * 2)
+      ctx.arc(S.cicX * 0.18 + 6, S.cicY * 0.18 + 2, 6, 0, Math.PI * 2)
       ctx.fill()
     }
+
+    drawCicadaShadow(ctx, S.cicX, S.cicY, scale, depth)
+
     if (S.shield) {
       ctx.strokeStyle = 'rgba(91,127,166,0.55)'
-      ctx.lineWidth = 3
+      ctx.lineWidth = 3 * scale
       ctx.beginPath()
-      ctx.arc(bx, by, 28, 0, Math.PI * 2)
+      ctx.arc(S.cicX, S.cicY, 28 * scale, 0, Math.PI * 2)
       ctx.stroke()
     }
-    drawCicada(ctx, S, bx, by, S.angle + Math.PI / 2, 1)
+
+    drawCicada(ctx, S, S.cicX, S.cicY, S.angle + Math.PI / 2 + whip * 0.01, 1, {
+      scale,
+      pitch,
+      depth,
+    })
   }
   ctx.restore()
 }
@@ -666,7 +797,9 @@ function drawFlight(ctx, S) {
   })
   ctx.globalAlpha = 1
   S.trail = S.trail.filter((t) => t.life > 0)
-  if (fy > -40) drawCicada(ctx, S, fx, fy, rot, 1)
+  if (fy > -40) {
+    drawCicada(ctx, S, fx, fy, rot, 1, { scale: 1.05, pitch: 1, depth: 0.4 })
+  }
   if (p < 0.25) {
     ctx.globalAlpha = Math.max(0, 1 - p * 4)
     ctx.font = 'bold 22px "ZCOOL XiaoWei", "PingFang SC", sans-serif'
