@@ -1,4 +1,4 @@
-import { groupedMods } from '../scenarios.js'
+import { groupedMods } from '../game/scenarios.js'
 
 export default function ModCodex() {
   return (

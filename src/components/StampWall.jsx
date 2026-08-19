@@ -1,4 +1,4 @@
-import { STAMPS } from '../stamps.js'
+import { STAMPS } from '../game/stamps.js'
 
 export default function StampWall({ earned }) {
   return (
